@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { DashboardStats } from '../components/Dashboard/DashboardStats';
 import { ProjectCard } from '../components/Projects/ProjectCard';
 import { Activity, TrendingUp, Clock, AlertTriangle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import api, { apiGetProjects, apiGetAuditLogs } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Project, AuditLog } from '../types';
 import { formatDistanceToNow } from 'date-fns';
+import toast from 'react-hot-toast';
 
 export const Dashboard: React.FC = () => {
   const { user } = useAuth();
@@ -18,6 +19,7 @@ export const Dashboard: React.FC = () => {
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
   const [recentActivities, setRecentActivities] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     fetchDashboardData();
@@ -27,29 +29,12 @@ export const Dashboard: React.FC = () => {
     if (!user) return;
 
     try {
-      // Fetch user's project memberships
-      const { data: memberships } = await supabase
-        .from('project_members')
-        .select(`
-          project_id,
-          projects (
-            id,
-            name,
-            description,
-            status,
-            created_at,
-            updated_at,
-            total_files,
-            total_size
-          )
-        `)
-        .eq('user_id', user.id);
+      // Fetch user's projects from API
+      const projects: Project[] = await apiGetProjects();
 
-      const projects = memberships?.map(m => m.projects).filter(Boolean) || [];
-      
       // Calculate stats
-      const totalFiles = projects.reduce((sum, p) => sum + (p.total_files || 0), 0);
-      const totalSize = projects.reduce((sum, p) => sum + (p.total_size || 0), 0);
+      const totalFiles = projects.reduce((sum: number, p: Project) => sum + (p.total_files || 0), 0);
+      const totalSize = projects.reduce((sum: number, p: Project) => sum + (p.total_size || 0), 0);
       const formatSize = (bytes: number) => {
         if (bytes === 0) return '0 MB';
         const k = 1024;
@@ -66,18 +51,10 @@ export const Dashboard: React.FC = () => {
       });
 
       // Set recent projects (last 3)
-      setRecentProjects(projects.slice(0, 3));
+  setRecentProjects(projects.slice(0, 3) as Project[]);
 
-      // Fetch recent activities
-      const { data: activities } = await supabase
-        .from('audit_logs')
-        .select(`
-          *,
-          users (full_name)
-        `)
-        .order('created_at', { ascending: false })
-        .limit(5);
-
+      // Fetch recent activities from API
+      const activities = await apiGetAuditLogs(5);
       setRecentActivities(activities || []);
 
     } catch (error) {
@@ -117,6 +94,16 @@ export const Dashboard: React.FC = () => {
         <p className="text-gray-600">
           Here's what's happening with your projects at {user?.organization}
         </p>
+        {user && !user.is_active && (
+          <div className="mt-3 p-3 rounded bg-yellow-50 border border-yellow-200 text-yellow-800">
+            Your account is pending approval. Some features may be disabled.
+          </div>
+        )}
+        {errorMessage && (
+          <div className="mt-3 p-3 rounded bg-red-50 border border-red-200 text-red-800">
+            {errorMessage}
+          </div>
+        )}
       </div>
 
       <DashboardStats stats={stats} />
@@ -142,8 +129,25 @@ export const Dashboard: React.FC = () => {
               <AlertTriangle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
               <h3 className="text-lg font-medium text-gray-900 mb-2">No Projects Yet</h3>
               <p className="text-gray-600 mb-4">
-                You haven't been assigned to any projects yet. Contact your administrator to get access.
+                You haven't been assigned to any projects yet. Contact your administrator to get access or start a new project.
               </p>
+
+              <div className="mt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
+                <button
+                  onClick={() => { window.alert('Request access: contact your admin'); }}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg"
+                >
+                  Request Access
+                </button>
+
+                <a href="/projects/new" className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700">
+                  Create Project
+                </a>
+
+                <a href="/users" className="px-4 py-2 text-sm text-blue-600">
+                  Invite Team Member
+                </a>
+              </div>
             </div>
           )}
         </div>
@@ -168,7 +172,7 @@ export const Dashboard: React.FC = () => {
                             {activity.action.replace('_', ' ')}
                           </p>
                           <p className="text-xs text-gray-500 mt-1">
-                            {formatDistanceToNow(new Date(activity.created_at), { addSuffix: true })}
+                            {activity.created_at ? formatDistanceToNow(new Date(activity.created_at), { addSuffix: true }) : 'some time ago'}
                           </p>
                         </div>
                       </div>

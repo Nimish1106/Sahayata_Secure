@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { ProjectCard } from '../components/Projects/ProjectCard';
 import { Plus, Search, Filter } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { apiGetProjects } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import { Project } from '../types';
 
@@ -10,6 +10,7 @@ export const Projects: React.FC = () => {
   const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
@@ -21,41 +22,20 @@ export const Projects: React.FC = () => {
     if (!user) return;
 
     try {
-      const { data: memberships, error } = await supabase
-        .from('project_members')
-        .select(`
-          project_id,
-          role,
-          projects (
-            id,
-            name,
-            description,
-            status,
-            created_at,
-            updated_at,
-            total_files,
-            total_size
-          )
-        `)
-        .eq('user_id', user.id);
-
-      if (error) throw error;
-
-      const projectsData = memberships
-        ?.map(m => m.projects)
-        .filter(Boolean) || [];
-
+      setError(null);
+      const projectsData: Project[] = await apiGetProjects();
       setProjects(projectsData);
-    } catch (error) {
-      console.error('Error fetching projects:', error);
+    } catch (err) {
+      console.error('Error fetching projects:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch projects');
     } finally {
       setLoading(false);
     }
   };
 
   const filteredProjects = projects.filter(project => {
-    const matchesSearch = project.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         project.description.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = (project.name?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false) ||
+                         (project.description?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
     const matchesStatus = statusFilter === 'all' || project.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -112,6 +92,8 @@ export const Projects: React.FC = () => {
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            aria-label="Filter by status"
+            title="Filter by status"
           >
             <option value="all">All Status</option>
             <option value="active">Active</option>
@@ -127,6 +109,18 @@ export const Projects: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-8">
+          <div className="flex">
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-red-800">Error</h3>
+              <div className="mt-2 text-sm text-red-700">{error}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Projects Grid */}
       {filteredProjects.length > 0 ? (

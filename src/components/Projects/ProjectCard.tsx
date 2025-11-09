@@ -7,7 +7,6 @@ import { formatDistanceToNow } from 'date-fns';
 interface ProjectCardProps {
   project: Project & {
     member_count?: number;
-    recent_activity?: string;
   };
 }
 
@@ -51,7 +50,11 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project }) => {
             <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(project.status)}`}>
               {project.status.charAt(0).toUpperCase() + project.status.slice(1)}
             </span>
-            <button className="p-1 text-gray-400 hover:text-gray-600">
+            <button 
+              className="p-1 text-gray-400 hover:text-gray-600"
+              title="More options"
+              aria-label="More options"
+            >
               <MoreVertical className="h-4 w-4" />
             </button>
           </div>

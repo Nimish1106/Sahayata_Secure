@@ -6,7 +6,7 @@ A comprehensive document management system specifically designed for non-profit 
 
 ### Core Security Features
 - **Multi-role Authentication**: Admin, Project Manager, and User roles with appropriate permissions
-- **Project-based Workspaces**: Strict isolation between different projects/campaigns
+- **Project-based Workspaces**: Strict isolation between different projects/campaigns 
 - **Comprehensive Audit Logging**: All file transfers and user activities are logged
 - **Role-Based Access Control (RBAC)**: Granular permissions system
 - **Secure File Upload**: Encrypted storage with metadata and version control
@@ -35,16 +35,15 @@ A comprehensive document management system specifically designed for non-profit 
 - **React Hot Toast** for user notifications
 
 ### Backend & Database
-- **Supabase** for backend services (authentication, database, file storage)
-- **PostgreSQL** database with Row Level Security (RLS)
-- **Real-time subscriptions** for activity updates
-- **Secure file storage** with access controls
+- **Node.js + Express** backend (local) with a small REST API for authentication and data access
+- **MySQL** (local or managed) for application data; schema and an init script are provided in `server/sql/init.sql`
+- JWT-based auth for sessions; auth/authorization is handled by the server (no RLS required)
 
 ## Getting Started
 
 ### Prerequisites
 - Node.js 18+ and npm
-- Supabase account and project
+- MySQL (local) — MySQL Workbench is recommended for running the provided `server/sql/init.sql`
 
 ### Installation
 
@@ -60,15 +59,27 @@ A comprehensive document management system specifically designed for non-profit 
    ```
 
 3. **Set up environment variables**
+   On macOS / Linux:
    ```bash
    cp .env.example .env
    ```
-   Fill in your Supabase credentials in the `.env` file.
+   On Windows (PowerShell):
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+   Or on Windows CMD:
+   ```cmd
+   copy .env.example .env
+   ```
+   Fill in the following values in the `.env` file for local development:
+   - `DATABASE_URL` (your MySQL connection string, e.g. `mysql://user:pass@localhost:3306/sahayata_db`)
+   - `JWT_SECRET` (a secure random string for signing tokens)
 
-4. **Set up Supabase**
-   - Click the "Supabase" button in the Bolt interface settings
-   - Configure your database schema using the provided migration files
-   - Enable Row Level Security on all tables
+   Important security note: Do NOT commit your local `.env` containing secrets to source control. Add `.env` to `.gitignore` and keep keys local.
+
+4. **Set up local MySQL schema**
+   - Open MySQL Workbench and create a database (example name: `sahayata_db`).
+   - Open `server/sql/init.sql` and execute it against the newly created database to create the required tables and indexes.
 
 5. **Start the development server**
    ```bash
@@ -133,9 +144,9 @@ The system uses the following main tables:
 - Configure CORS policies appropriately
 
 ### Environment Variables
-Ensure all production environment variables are properly configured:
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
+Ensure all production environment variables are properly configured for the server and the frontend.
+- Server: `DATABASE_URL`, `JWT_SECRET`
+- Frontend: `VITE_API_URL` (e.g. `http://localhost:4000`)
 
 ## Support & Documentation
 
@@ -167,3 +178,28 @@ This project is specifically designed for NGO document management needs. When co
 ## Contact
 
 For support with deployment or customization for your NGO, please contact [support information].
+
+## Troubleshooting
+
+- Missing env variables / server not running: If the frontend errors about API connectivity, confirm `VITE_API_URL` points to your running local server (e.g. `http://localhost:4000`) and that the server has been started with `npm run dev` inside the `server/` folder.
+- Database schema errors: If endpoints return SQL errors, verify `server/sql/init.sql` was executed in your MySQL database and the database user in `DATABASE_URL` has appropriate privileges.
+- Authentication errors: Ensure `JWT_SECRET` is set and the token returned from `/auth/login` or `/auth/register` is stored by the frontend (the app stores a token in localStorage during development).
+
+## NGO Setup Guide
+
+1. Create the first admin user in the MySQL database or use the server's `/auth/register` endpoint. After the account is created, set `is_active = true` on the `users` row to approve the user if needed (you can update it directly in MySQL Workbench).
+2. Create projects in the `projects` table and assign users via `project_members` with appropriate `role` values (`admin`, `project_manager`, `user`).
+3. Audit logs are created for important actions. When creating users via the web UI or API, the system will record a `user_created` audit record.
+4. Role hierarchy: `admin` > `project_manager` > `user`. Admins can manage the entire system; project managers can manage projects and members under their scope.
+
+## Development
+
+-- Run the SQL file `server/sql/init.sql` in MySQL Workbench to create tables and initial constraints before starting the app.
+- To seed test data, insert sample rows into `users`, `projects`, `project_members`, and `documents`. The migration that adds `total_files` and `total_size` will backfill project stats from existing documents.
+- To reset the database for testing, drop and recreate schema or restore from a known snapshot.
+
+## Security Notes
+
+- RLS policies protect row-level access; helper functions created with `SECURITY DEFINER` are intentionally minimal and only perform limited checks (e.g. return role for `auth.uid()`). Keep their logic small and review them carefully before changes.
+- Do not commit `.env` files containing Supabase keys. If keys are committed, rotate them immediately in Supabase.
+- The migrations include guards to avoid audit-trigger recursion. If you modify triggers or policies, re-test signup and profile creation flows.

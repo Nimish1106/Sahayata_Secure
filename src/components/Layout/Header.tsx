@@ -1,13 +1,16 @@
 import React from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Bell, Settings, User, LogOut, Shield } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Bell, Settings, LogOut, Shield } from 'lucide-react';
 
 export const Header: React.FC = () => {
   const { user, signOut } = useAuth();
+  const navigate = useNavigate();
 
   const handleSignOut = async () => {
     try {
       await signOut();
+      navigate('/auth', { replace: true });
     } catch (error) {
       console.error('Error signing out:', error);
     }

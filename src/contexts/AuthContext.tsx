@@ -1,13 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User as SupabaseUser } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { apiLogin, apiRegister, apiMe, setToken } from '../lib/api';
 import { User } from '../types';
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: any }>;
-  signUp: (email: string, password: string, fullName: string, organization: string) => Promise<{ error: any }>;
+  signIn: (email: string, password: string) => Promise<{ error: any; res?: any }>;
+  signUp: (email: string, password: string, fullName?: string) => Promise<{ error: any; res?: any }>;
   signOut: () => Promise<void>;
 }
 
@@ -15,9 +14,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
   return context;
 };
 
@@ -26,97 +23,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        fetchUserProfile(session.user);
-      } else {
+    const init = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
         setLoading(false);
+        return;
       }
-    });
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        fetchUserProfile(session.user);
-      } else {
+      try {
+        const me = await apiMe();
+        setUser(me || null);
+      } catch (err) {
+        console.warn('Failed to fetch /auth/me', err);
+        setToken(null);
         setUser(null);
+      } finally {
         setLoading(false);
       }
-    });
-
-    return () => subscription.unsubscribe();
+    };
+    init();
   }, []);
 
-  const fetchUserProfile = async (authUser: SupabaseUser) => {
+  const signIn = async (email: string, password: string) => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', authUser.id)
-        .single();
-
-      if (error) {
-        // Create user profile if it doesn't exist
-        const { data: newUser, error: createError } = await supabase
-          .from('users')
-          .insert([{
-            id: authUser.id,
-            email: authUser.email,
-            full_name: authUser.user_metadata.full_name || '',
-            organization: authUser.user_metadata.organization || '',
-            role: authUser.user_metadata.role || 'user',
-          }])
-          .select('*')
-          .single();
-
-        if (createError) throw createError;
-        setUser(newUser);
-      } else {
-        setUser(data);
+      const res = await apiLogin(email, password);
+      if (res?.token) {
+        setToken(res.token);
+        setUser(res.user || null);
+        return { error: null, res };
       }
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
-    } finally {
-      setLoading(false);
+      return { error: 'no_token', res };
+    } catch (err) {
+      console.error('signIn error', err);
+      return { error: err, res: null };
     }
   };
 
-  const signIn = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    return { error };
-  };
-
-  const signUp = async (email: string, password: string, fullName: string, organization: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: fullName,
-          organization,
-          role: 'user',
-        }
+  const signUp = async (email: string, password: string, fullName?: string) => {
+    try {
+      const res = await apiRegister(email, password, fullName);
+      if (res?.token) {
+        setToken(res.token);
+        setUser(res.user || null);
+        return { error: null, res };
       }
-    });
-    return { error };
+      return { error: 'no_token', res };
+    } catch (err) {
+      console.error('signUp error', err);
+      return { error: err, res: null };
+    }
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    setToken(null);
+    setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{
-      user,
-      loading,
-      signIn,
-      signUp,
-      signOut,
-    }}>
+    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Upload, X, FileText, AlertCircle } from 'lucide-react';
-import { uploadFile } from '../../lib/supabase';
+import { apiUploadFile } from '../../lib/api';
 import toast from 'react-hot-toast';
 
 interface FileUploadProps {
@@ -46,7 +46,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ projectId, onUploadCompl
         const description = descriptions[file.name] || '';
         const tagArray = tags[file.name] ? tags[file.name].split(',').map(t => t.trim()).filter(t => t) : [];
         
-        await uploadFile(file, projectId, description, tagArray);
+  await apiUploadFile(file, projectId, description, tagArray);
         successCount++;
       } catch (error) {
         console.error(`Error uploading ${file.name}:`, error);
@@ -78,6 +78,8 @@ export const FileUpload: React.FC<FileUploadProps> = ({ projectId, onUploadCompl
           <button
             onClick={onClose}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            aria-label="Close upload dialog"
+            title="Close upload dialog"
           >
             <X className="h-5 w-5" />
           </button>
@@ -119,6 +121,8 @@ export const FileUpload: React.FC<FileUploadProps> = ({ projectId, onUploadCompl
                     <button
                       onClick={() => removeFile(index)}
                       className="p-1 text-gray-400 hover:text-red-600 transition-colors"
+                      aria-label={`Remove ${file.name}`}
+                      title={`Remove ${file.name}`}
                     >
                       <X className="h-4 w-4" />
                     </button>
@@ -163,6 +167,8 @@ export const FileUpload: React.FC<FileUploadProps> = ({ projectId, onUploadCompl
             onChange={handleFileSelect}
             className="hidden"
             accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.jpg,.jpeg,.png"
+            aria-label="Select files to upload"
+            title="Select files to upload"
           />
         </div>
 

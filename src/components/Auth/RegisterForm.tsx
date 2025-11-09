@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import { Shield, Mail, Lock, User, Building, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -17,6 +18,7 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({ onToggleMode }) => {
   });
   const [loading, setLoading] = useState(false);
   const { signUp } = useAuth();
+  const navigate = useNavigate();
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData(prev => ({
@@ -41,7 +43,7 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({ onToggleMode }) => {
     setLoading(true);
 
     try {
-      const { error } = await signUp(
+      const { error, needsConfirmation } = await signUp(
         formData.email,
         formData.password,
         formData.fullName,
@@ -50,9 +52,13 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({ onToggleMode }) => {
       
       if (error) {
         toast.error(error.message || 'Failed to create account');
-      } else {
-        toast.success('Account created successfully! Please check your email to verify your account.');
+      } else if (needsConfirmation) {
+        toast.success('Account created. Please check your email to confirm your address before signing in.');
         onToggleMode();
+      } else {
+        // Session created immediately — navigate into the app
+        toast.success('Account created successfully! Signing you in...');
+        navigate('/dashboard', { replace: true });
       }
     } catch (error) {
       toast.error('An unexpected error occurred');
