@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id CHAR(36) NOT NULL UNIQUE,
   full_name VARCHAR(255),
+  organization VARCHAR(255),
   avatar_url TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -44,8 +45,12 @@ CREATE TABLE IF NOT EXISTS documents (
   filename VARCHAR(1024) NOT NULL,
   file_size INT DEFAULT 0,
   url TEXT NOT NULL,
+  uploaded_by CHAR(36),
+  status ENUM('pending', 'verified') DEFAULT 'pending',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_documents_status (status)
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (

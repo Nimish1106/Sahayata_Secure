@@ -4,7 +4,7 @@ function getToken() {
   return localStorage.getItem('token');
 }
 
-async function request(path: string, opts: RequestInit = {}) {
+export async function request(path: string, opts: RequestInit = {}) {
   try {
     const headers: Record<string,string> = (opts.headers as Record<string,string>) || {};
     headers['Content-Type'] = 'application/json';
@@ -38,8 +38,8 @@ async function request(path: string, opts: RequestInit = {}) {
   }
 }
 
-export async function apiRegister(email: string, password: string, fullName?: string) {
-  return request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password, fullName }) });
+export async function apiRegister(email: string, password: string, fullName?: string, organization?: string) {
+  return request('/auth/register', { method: 'POST', body: JSON.stringify({ email, password, fullName, organization }) });
 }
 
 export async function apiLogin(email: string, password: string) {
@@ -111,6 +111,35 @@ export async function apiCreateProject(name: string, description?: string) {
 
 export async function apiGetProjectById(projectId: string) {
   return request(`/projects/${projectId}`, { method: 'GET' });
+}
+
+export async function apiVerifyDocument(documentId: string) {
+  return request(`/documents/${documentId}/verify`, { method: 'POST' });
+}
+
+export async function apiGetPendingDocuments() {
+  return request('/documents/pending', { method: 'GET' });
+}
+
+export async function apiGetUsers(status?: string) {
+  const q = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request(`/users${q}`, { method: 'GET' });
+}
+
+export async function apiApproveUser(userId: string) {
+  return request(`/auth/approve/${userId}`, { method: 'POST' });
+}
+
+export async function apiGetProjectMembers(projectId: string) {
+  return request(`/projects/${projectId}/members`, { method: 'GET' });
+}
+
+export async function apiAddProjectMember(projectId: string, email: string, role = 'viewer') {
+  return request(`/projects/${projectId}/members`, { method: 'POST', body: JSON.stringify({ email, role }) });
+}
+
+export async function apiRemoveProjectMember(projectId: string, userId: string) {
+  return request(`/projects/${projectId}/members/${userId}`, { method: 'DELETE' });
 }
 
 export default { 

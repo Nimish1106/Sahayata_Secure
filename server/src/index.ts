@@ -4,9 +4,13 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pool from './db';
+import documentsRouter from './routes/documents';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
+import { v2 as cloudinary } from 'cloudinary';
+import type { UploadApiResponse } from 'cloudinary';
+import * as streamifier from 'streamifier';
 
 // Global error handler
 const handleError = (err: any, res: any) => {
@@ -22,6 +26,23 @@ const handleError = (err: any, res: any) => {
 
 dotenv.config();
 
+// Validate Cloudinary credentials at startup to fail fast if misconfigured
+const missingCloudinary = [] as string[];
+if (!process.env.CLOUDINARY_CLOUD_NAME) missingCloudinary.push('CLOUDINARY_CLOUD_NAME');
+if (!process.env.CLOUDINARY_API_KEY) missingCloudinary.push('CLOUDINARY_API_KEY');
+if (!process.env.CLOUDINARY_API_SECRET) missingCloudinary.push('CLOUDINARY_API_SECRET');
+if (missingCloudinary.length) {
+  console.error(`Missing Cloudinary configuration: ${missingCloudinary.join(', ')}. Please set these in your environment (server/.env).`);
+  // Exit early - prevents runtime upload failures later
+  process.exit(1);
+}
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'please_change_me';
@@ -29,31 +50,39 @@ const JWT_SECRET = process.env.JWT_SECRET || 'please_change_me';
 app.use(cors());
 app.use(express.json());
 
+// Register documents router
+app.use('/documents', documentsRouter);
+
 // Serve uploaded files as static resources at /uploads
 // e.g. GET /uploads/<projectId>/<filename>
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+// By default we disable serving local uploads so only Cloudinary URLs are used.
+// Set USE_LOCAL_UPLOADS=true in the server environment if you want to enable local serving for development.
+if (process.env.USE_LOCAL_UPLOADS === 'true') {
+  app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+  console.log('Serving local uploads at /uploads (USE_LOCAL_UPLOADS=true)');
+} else {
+  console.log('Local uploads serving disabled (USE_LOCAL_UPLOADS != true). Using Cloudinary for file delivery.');
+}
 
-// Multer setup for local file storage under server/uploads/<projectId>/
-// Use a deterministic path based on process.cwd() so files are always
-// written to the repo's server/uploads folder regardless of runtime __dirname behavior.
-const storage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    const projectId = String(req.query.projectId || 'general');
-    const dest = path.join(process.cwd(), 'uploads', projectId);
-    try {
-      fs.mkdirSync(dest, { recursive: true });
-      cb(null, dest);
-    } catch (err) {
-      cb(err as any, dest);
-    }
-  },
-  filename: (_req, file, cb) => {
-    // keep original filename but prefix with timestamp+random to avoid collisions
-    const safe = `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.originalname}`;
-    cb(null, safe);
-  }
-});
-const upload = multer({ storage });
+// Multer setup - use memoryStorage for streaming upload to Cloudinary and set a fileSize limit
+// to avoid using too much memory. Limit set to 25 MB (adjustable).
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_SIZE } });
+
+// Helper function to upload buffer to Cloudinary (typed)
+function uploadToCloudinary(buffer: Buffer, folder: string): Promise<UploadApiResponse> {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { folder, resource_type: 'auto' },
+      (error, result) => {
+        if (error) return reject(error);
+        if (!result) return reject(new Error('No result from Cloudinary'));
+        resolve(result as UploadApiResponse);
+      }
+    );
+    streamifier.createReadStream(buffer).pipe(uploadStream);
+  });
+}
 
 // Health
 app.get('/', (_req, res) => res.json({ ok: true }));
@@ -62,7 +91,7 @@ app.get('/', (_req, res) => res.json({ ok: true }));
 app.post('/auth/register', async (req, res) => {
   const conn = await pool.getConnection();
   try {
-    const { email, password, fullName } = req.body;
+    const { email, password, fullName, organization } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'email and password required' });
 
     // check existing
@@ -78,15 +107,16 @@ app.post('/auth/register', async (req, res) => {
       [email, passwordHash]
     );
     const [created] = await conn.execute<any[]>(
-      `SELECT id, email, role, is_active FROM users WHERE email = ? LIMIT 1`,
+      `SELECT id, email, role, is_active, created_at FROM users WHERE email = ? LIMIT 1`,
       [email]
     );
     const user = created[0];
-    await conn.execute(`INSERT INTO profiles (user_id, full_name) VALUES (?, ?)`, [user.id, fullName || null]);
+    // Store profile including optional organization
+    await conn.execute(`INSERT INTO profiles (user_id, full_name, organization) VALUES (?, ?, ?)`, [user.id, fullName || null, organization || null]);
     await conn.commit();
 
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, email: user.email, profile: { fullName } } });
+    res.json({ token, user: { id: user.id, email: user.email, created_at: user.created_at, profile: { full_name: fullName || null, organization: organization || null } } });
   } catch (err) {
     await conn.rollback().catch(() => {});
     console.error(err);
@@ -103,7 +133,7 @@ app.post('/auth/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'email and password required' });
 
-    const [rows] = await conn.execute<any[]>(`SELECT id, email, password_hash FROM users WHERE email = ? LIMIT 1`, [email]);
+    const [rows] = await conn.execute<any[]>(`SELECT id, email, password_hash, role, is_active FROM users WHERE email = ? LIMIT 1`, [email]);
     if (!rows.length) return res.status(401).json({ error: 'invalid_credentials' });
 
     const user = rows[0];
@@ -119,17 +149,8 @@ app.post('/auth/login', async (req, res) => {
     );
     const profile = profileRows[0] || null;
     
-    // Include role and is_active in response
-    const userResponse = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      is_active: Boolean(user.is_active),
-      profile
-    };
-
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, email: user.email, profile } });
+    res.json({ token, user: { id: user.id, email: user.email, role: user.role, is_active: Boolean(user.is_active), profile } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'internal_error' });
@@ -161,12 +182,16 @@ app.get('/auth/me', authMiddleware, async (req: any, res) => {
   const conn = await pool.getConnection();
   try {
     const userId = req.user?.userId;
-    const [rows] = await conn.execute<any[]>(`SELECT id, email FROM users WHERE id = ? LIMIT 1`, [userId]);
+  const [rows] = await conn.execute<any[]>(`SELECT id, email FROM users WHERE id = ? LIMIT 1`, [userId]);
     if (!rows.length) return res.status(404).json({ error: 'not_found' });
     const user = rows[0];
-    const [profileRows] = await conn.execute<any[]>(`SELECT full_name, avatar_url FROM profiles WHERE user_id = ? LIMIT 1`, [userId]);
+    // Select known user fields
+    const [userRows] = await conn.execute<any[]>(`SELECT role, is_active FROM users WHERE id = ? LIMIT 1`, [userId]);
+    const userMeta = userRows[0] || {};
+    // Read profile including organization if present
+    const [profileRows] = await conn.execute<any[]>(`SELECT full_name, avatar_url, organization FROM profiles WHERE user_id = ? LIMIT 1`, [userId]);
     const profile = profileRows[0] || null;
-    res.json({ id: user.id, email: user.email, profile });
+    res.json({ id: user.id, email: user.email, role: userMeta.role, is_active: Boolean(userMeta.is_active), profile, organization: profile?.organization || null });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'internal_error' });
@@ -275,16 +300,26 @@ app.get('/projects/:id', authMiddleware, async (req: any, res) => {
       return res.status(404).json({ error: 'project_not_found' });
     }
 
-    // Get documents
-    const [documents] = await conn.execute<any[]>(
-      `SELECT d.*, u.email as uploaded_by_email, p.full_name as uploaded_by_name
+    // Get user role
+    const [userRows] = await conn.execute<any[]>(
+      `SELECT role FROM users WHERE id = ? LIMIT 1`,
+      [userId]
+    );
+    const userRole = userRows.length ? userRows[0].role : 'user';
+    // Treat 'project_manager' as 'admin'
+    const effectiveRole = userRole === 'project_manager' ? 'admin' : userRole;
+    // Get documents: admins see all, users see only verified
+    let documentsQuery = `SELECT d.*, u.email as uploaded_by_email, p.full_name as uploaded_by_name
        FROM documents d
        LEFT JOIN users u ON u.id = d.uploaded_by
        LEFT JOIN profiles p ON p.user_id = u.id
-       WHERE d.project_id = ?
-       ORDER BY d.created_at DESC`,
-      [projectId]
-    );
+       WHERE d.project_id = ?`;
+    const queryParams: any[] = [projectId];
+    if (effectiveRole !== 'admin') {
+      documentsQuery += ' AND d.status = "verified"';
+    }
+    documentsQuery += ' ORDER BY d.created_at DESC';
+    const [documents] = await conn.execute<any[]>(documentsQuery, queryParams);
 
     res.json({
       ...project[0],
@@ -313,7 +348,7 @@ app.post('/projects', authMiddleware, async (req: any, res) => {
       return res.status(403).json({ error: 'account_not_active' });
     }
     
-    if (user.role !== 'admin' && user.role !== 'project_manager') {
+    if (user.role !== 'admin') {
       return res.status(403).json({ error: 'insufficient_permissions' });
     }
 
@@ -353,14 +388,29 @@ app.get('/audit_logs', authMiddleware, async (req: any, res) => {
     const limit = Number(req.query.limit) || 10;
     const safeLimit = Math.max(1, Math.min(limit, 100)); // avoid injection
     const [rows] = await conn.query(`
-      SELECT a.id, a.action, a.details, a.created_at, u.email AS user_email, p.full_name AS user_full_name
+      SELECT a.id, a.action, a.details, a.created_at, a.user_id as user_id, u.email AS user_email, p.full_name AS user_full_name
       FROM audit_logs a
       LEFT JOIN users u ON u.id = a.user_id
       LEFT JOIN profiles p ON p.user_id = a.user_id
       ORDER BY a.created_at DESC
       LIMIT ${safeLimit}
     `);
-    res.json(rows);
+
+    // Normalize response to include a nested `user` object which the frontend expects.
+    const normalized = (rows as any[]).map(r => ({
+      id: r.id,
+      action: r.action,
+      // Try to parse JSON details if stored as string
+      details: typeof r.details === 'string' ? (() => { try { return JSON.parse(r.details); } catch { return r.details; } })() : r.details,
+      created_at: r.created_at,
+      user: {
+        id: r.user_id || null,
+        email: r.user_email || null,
+        full_name: r.user_full_name || null,
+      }
+    }));
+
+    res.json(normalized);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'internal_error' });
@@ -369,54 +419,119 @@ app.get('/audit_logs', authMiddleware, async (req: any, res) => {
   }
 });
 
-
-// File upload endpoint: saves to server/uploads/<projectId>/ and inserts metadata
-app.post('/files', authMiddleware, upload.single('file'), async (req: any, res) => {
-  console.log('File upload request received');
-  console.log('Request body:', req.body);
-  console.log('Request query:', req.query);
-  console.log('Request file:', req.file);
-  
+// Admin: list pending documents across projects
+app.get('/documents/pending', authMiddleware, requireRole(['admin']), async (req: any, res) => {
   const conn = await pool.getConnection();
   try {
-    const file = req.file;
-    if (!file) {
-      console.error('No file received in the request');
-      return res.status(400).json({ error: 'missing_file' });
-    }
-
-    const projectIdRaw = req.query.projectId || req.body.projectId || 'general';
-    const projectId = String(projectIdRaw);
-    const url = `/uploads/${projectId}/${file.filename}`;
-    console.log('File URL:', url);
-    console.log('File details:', {
-      originalname: file.originalname,
-      size: file.size,
-      path: file.path
-    });
-
-    // include uploaded_by (current user) in documents metadata
-    const uploadedBy = req.user?.userId || null;
-    const [result] = await conn.execute<any[]>(
-      `INSERT INTO documents (project_id, filename, file_size, url, uploaded_by) VALUES (?, ?, ?, ?, ?)`,
-      [projectId, file.originalname, file.size, url, uploadedBy]
-    );
-
-    const insertId = (result as any).insertId;
-
-    await conn.execute(
-      `INSERT INTO audit_logs (user_id, project_id, file_id, action, details) VALUES (?, ?, ?, ?, ?)`,
-      [req.user.userId, projectId, insertId, 'file_uploaded', JSON.stringify({ filename: file.originalname, size: file.size })]
-    );
-
-    const [rows] = await conn.execute<any[]>(`SELECT id, project_id, filename, file_size, url, created_at FROM documents WHERE id = ? LIMIT 1`, [insertId]);
-    res.json(rows[0]);
+    const [rows] = await conn.execute<any[]>(`
+      SELECT d.id, d.project_id, d.filename, d.file_size, d.url, d.created_at,
+             u.id as uploaded_by, u.email as uploaded_by_email, p.full_name as uploaded_by_name,
+             proj.name as project_name
+      FROM documents d
+      LEFT JOIN users u ON u.id = d.uploaded_by
+      LEFT JOIN profiles p ON p.user_id = u.id
+      LEFT JOIN projects proj ON proj.id = d.project_id
+      WHERE d.status = 'pending'
+      ORDER BY d.created_at DESC
+    `);
+    res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'upload_failed' });
+    console.error('Error fetching pending documents:', err);
+    res.status(500).json({ error: 'internal_error' });
   } finally {
     conn.release();
   }
+});
+
+
+// File upload endpoint: saves to server/uploads/<projectId>/ and inserts metadata
+// File upload endpoint: stream to Cloudinary and insert metadata
+app.post('/files', authMiddleware, async (req: any, res) => {
+  // Use multer.single manually so we can catch Multer errors and return 413 if file too large
+  const single = upload.single('file');
+  single(req, res, async (uploadErr: any) => {
+    const conn = await pool.getConnection();
+    try {
+      if (uploadErr) {
+        console.error('Multer error during upload:', uploadErr);
+        if (uploadErr instanceof multer.MulterError && uploadErr.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ error: 'file_too_large', maxBytes: MAX_FILE_SIZE });
+        }
+        return res.status(400).json({ error: 'upload_error', details: uploadErr.message || String(uploadErr) });
+      }
+
+      console.log('File upload request received');
+      console.log('Request body:', req.body);
+      console.log('Request query:', req.query);
+      console.log('Request file:', req.file);
+
+      const file = req.file;
+      if (!file) {
+        console.error('No file received in the request');
+        return res.status(400).json({ error: 'missing_file' });
+      }
+
+      // Basic MIME type / extension validation (documents & images)
+      const allowed = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'text/csv',
+        'text/plain',
+        'image/jpeg',
+        'image/png'
+      ];
+      if (!allowed.includes(file.mimetype)) {
+        console.error('Rejected file due to unsupported mime type:', file.mimetype);
+        return res.status(415).json({ error: 'unsupported_media_type' });
+      }
+
+      // Validate projectId: must be a positive integer. Do NOT default to 'general' for DB.
+      const projectIdRaw = req.query.projectId ?? req.body.projectId;
+      if (projectIdRaw === undefined || projectIdRaw === null) {
+        return res.status(400).json({ error: 'projectId_required' });
+      }
+      const projectIdNum = parseInt(String(projectIdRaw), 10);
+      if (Number.isNaN(projectIdNum) || projectIdNum <= 0) {
+        return res.status(400).json({ error: 'invalid_projectId' });
+      }
+
+      // Cloudinary folder name can default to string form; DB uses numeric project id
+      const folderName = String(projectIdNum) || 'general';
+
+      // Upload to Cloudinary (typed)
+      const uploadResult = await uploadToCloudinary(file.buffer, folderName);
+      const url = (uploadResult.secure_url || uploadResult.url) as string;
+      console.log('Cloudinary file URL:', url);
+      console.log('File details:', { originalname: file.originalname, size: file.size });
+
+      // include uploaded_by (current user) in documents metadata
+      const uploadedBy = req.user?.userId || null;
+      // All uploads are marked as 'pending' until verified by admin
+      const [result] = await conn.execute<any[]>(
+        `INSERT INTO documents (project_id, filename, file_size, url, uploaded_by, status) VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectIdNum, file.originalname, file.size, url, uploadedBy, 'pending']
+      );
+
+      const insertId = (result as any).insertId;
+
+      await conn.execute(
+        `INSERT INTO audit_logs (user_id, project_id, file_id, action, details) VALUES (?, ?, ?, ?, ?)`,
+        [req.user.userId, projectIdNum, insertId, 'file_uploaded', JSON.stringify({ filename: file.originalname, size: file.size })]
+      );
+
+      const [rows] = await conn.execute<any[]>(`SELECT id, project_id, filename, file_size, url, created_at FROM documents WHERE id = ? LIMIT 1`, [insertId]);
+      res.json(rows[0]);
+    } catch (err) {
+      console.error('Upload handler error:', err);
+      // If Multer threw an error it would have been handled above; here return generic 500
+      res.status(500).json({ error: 'upload_failed' });
+    } finally {
+      conn.release();
+    }
+  });
 });
 
 // Role-based middleware
@@ -429,7 +544,9 @@ function requireRole(roles: string[]) {
         [req.user.userId]
       );
       if (!rows.length) return res.status(404).json({ error: 'user_not_found' });
-      const userRole = rows[0].role;
+      let userRole = rows[0].role;
+      // Treat 'project_manager' as 'admin' for permissions
+      if (userRole === 'project_manager') userRole = 'admin';
       if (!roles.includes(userRole)) {
         return res.status(403).json({ error: 'insufficient_permissions' });
       }
@@ -441,6 +558,29 @@ function requireRole(roles: string[]) {
 }
 
 // Approve user (admin only)
+// Admin document verification endpoint
+app.post('/documents/:id/verify', authMiddleware, requireRole(['admin']), async (req: any, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const documentId = req.params.id;
+    // Set status to 'verified'
+    await conn.execute(
+      `UPDATE documents SET status = 'verified' WHERE id = ?`,
+      [documentId]
+    );
+    // Log verification
+    await conn.execute(
+      `INSERT INTO audit_logs (user_id, file_id, action, details) VALUES (?, ?, 'document_verified', ?)`,
+      [req.user.userId, documentId, JSON.stringify({ documentId })]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'verification_failed' });
+  } finally {
+    conn.release();
+  }
+});
 app.post('/auth/approve/:userId', authMiddleware, requireRole(['admin']), async (req: any, res) => {
   const conn = await pool.getConnection();
   try {
@@ -459,6 +599,86 @@ app.post('/auth/approve/:userId', authMiddleware, requireRole(['admin']), async 
     res.json({ success: true });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    conn.release();
+  }
+});
+
+// Admin: list users (optionally filter pending)
+app.get('/users', authMiddleware, requireRole(['admin']), async (req: any, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const status = String(req.query.status || 'all');
+  let q = `SELECT u.id, u.email, u.role, u.is_active, p.full_name, p.organization AS organization, u.created_at FROM users u LEFT JOIN profiles p ON p.user_id = u.id`;
+    const params: any[] = [];
+    if (status === 'pending') {
+      q += ' WHERE u.is_active = FALSE';
+    }
+    q += ' ORDER BY u.created_at DESC';
+    const [rows] = await conn.execute<any[]>(q, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error listing users:', err);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    conn.release();
+  }
+});
+
+// Project members management
+app.get('/projects/:id/members', authMiddleware, async (req: any, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const projectId = req.params.id;
+    const [rows] = await conn.execute<any[]>(`
+      SELECT pm.user_id, pm.role, pm.joined_at, u.email, p.full_name
+      FROM project_members pm
+      LEFT JOIN users u ON u.id = pm.user_id
+      LEFT JOIN profiles p ON p.user_id = u.id
+      WHERE pm.project_id = ?
+    `, [projectId]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching members:', err);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    conn.release();
+  }
+});
+
+app.post('/projects/:id/members', authMiddleware, requireRole(['admin']), async (req: any, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const projectId = req.params.id;
+    const { email, role } = req.body;
+    if (!email) return res.status(400).json({ error: 'email_required' });
+
+    const [users] = await conn.execute<any[]>(`SELECT id FROM users WHERE email = ? LIMIT 1`, [email]);
+    if (!users.length) return res.status(404).json({ error: 'user_not_found' });
+    const userId = users[0].id;
+
+    await conn.execute(`INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)`, [projectId, userId, role || 'viewer']);
+    await conn.execute(`INSERT INTO audit_logs (user_id, project_id, action, details) VALUES (?, ?, 'member_added', ?)`, [req.user.userId, projectId, JSON.stringify({ added_user: userId, role: role || 'viewer' })]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error adding member:', err);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    conn.release();
+  }
+});
+
+app.delete('/projects/:id/members/:userId', authMiddleware, requireRole(['admin']), async (req: any, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const projectId = req.params.id;
+    const userId = req.params.userId;
+    await conn.execute(`DELETE FROM project_members WHERE project_id = ? AND user_id = ?`, [projectId, userId]);
+    await conn.execute(`INSERT INTO audit_logs (user_id, project_id, action, details) VALUES (?, ?, 'member_removed', ?)`, [req.user.userId, projectId, JSON.stringify({ removed_user: userId })]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error removing member:', err);
     res.status(500).json({ error: 'internal_error' });
   } finally {
     conn.release();
@@ -487,3 +707,6 @@ app.post('/auth/init-admin', async (_req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+
+// Export app for testing
+export default app;

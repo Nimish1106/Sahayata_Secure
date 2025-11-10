@@ -35,6 +35,7 @@ export interface DocumentFile {
   id: string;
   project_id: string;
   name: string;
+  filename?: string; // some backend responses use `filename`
   description?: string;
   file_path: string;
   file_size: number;
@@ -42,6 +43,9 @@ export interface DocumentFile {
   version: number;
   uploaded_by: string;
   uploaded_at: string;
+  status?: 'pending' | 'verified' | 'rejected';
+  url?: string;
+  created_at?: string;
   tags?: string[];
   is_archived: boolean;
   parent_file_id?: string;

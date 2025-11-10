@@ -8,9 +8,13 @@ import { RegisterForm } from './components/Auth/RegisterForm';
 import { Header } from './components/Layout/Header';
 import { Sidebar } from './components/Layout/Sidebar';
 import { Dashboard } from './pages/Dashboard';
+import { AdminPendingDocuments } from './pages/AdminPendingDocuments';
+import { AdminUsers } from './pages/AdminUsers';
 import { Projects } from './pages/Projects';
 import { NewProject } from './pages/NewProject';
 import { ProjectDetail } from './pages/ProjectDetail';
+import { MyDocuments } from './pages/MyDocuments';
+import { ActivityLog } from './pages/ActivityLog';
 
 const AuthPage: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -81,8 +85,10 @@ const AppContent: React.FC = () => {
         <Route path="/projects" element={<Projects />} />
         <Route path="/projects/new" element={<NewProject />} />
         <Route path="/projects/:projectId" element={<ProjectDetail />} />
-        <Route path="/documents" element={<div className="p-6"><h1>Documents</h1></div>} />
-        <Route path="/activity" element={<div className="p-6"><h1>Activity Log</h1></div>} />
+  <Route path="/admin/pending-documents" element={<AdminPendingDocuments />} />
+  <Route path="/users" element={<AdminUsers />} />
+        <Route path="/documents" element={<MyDocuments />} />
+        <Route path="/activity" element={<ActivityLog />} />
         <Route path="/users" element={<div className="p-6"><h1>User Management</h1></div>} />
         <Route path="/admin" element={<div className="p-6"><h1>Admin Settings</h1></div>} />
       </Route>

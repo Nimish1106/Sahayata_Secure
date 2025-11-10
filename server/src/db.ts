@@ -73,6 +73,24 @@ async function initializeDatabase() {
       )
     `);
 
+    // Create documents table
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        file_size BIGINT NOT NULL,
+        url VARCHAR(1024) NOT NULL,
+        uploaded_by CHAR(36) NOT NULL,
+        project_id INT,
+        document_type VARCHAR(50),
+        status ENUM('pending', 'verified', 'rejected') DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+      )
+    `);
+
     console.log('Database tables verified/created successfully');
   } catch (err) {
     console.error('Database initialization error:', err);

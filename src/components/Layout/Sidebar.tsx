@@ -30,6 +30,7 @@ export const Sidebar: React.FC = () => {
   const adminItems = [
     { path: '/users', icon: Users, label: 'User Management' },
     { path: '/admin', icon: Settings, label: 'Admin Settings' },
+    { path: '/admin/pending-documents', icon: FileText, label: 'Pending Documents' },
   ];
 
   return (

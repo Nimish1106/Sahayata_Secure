@@ -2,7 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Upload, Filter, Search } from 'lucide-react';
 import { FileUpload } from '../components/Documents/FileUpload';
-import { apiGetProjectById } from '../lib/api';
+import { apiGetProjectById, apiVerifyDocument, apiGetProjectMembers, apiAddProjectMember, apiRemoveProjectMember } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
+import { DocumentFile } from '../types';
+import toast from 'react-hot-toast';
+import { resolveFileUrl } from '../lib/utils';
 
 export const ProjectDetail: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -10,12 +14,30 @@ export const ProjectDetail: React.FC = () => {
   const [showUpload, setShowUpload] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { user } = useAuth();
   const [project, setProject] = useState<any>(null);
-  const [documents, setDocuments] = useState<any[]>([]);
+  const [documents, setDocuments] = useState<DocumentFile[]>([]);
+  const [showMembers, setShowMembers] = useState(false);
+  const [members, setMembers] = useState<any[]>([]);
+  const [addingEmail, setAddingEmail] = useState('');
 
   useEffect(() => {
     fetchProjectDetails();
   }, [projectId]);
+
+  const fetchMembers = async () => {
+    if (!projectId) return;
+    try {
+      const data = await apiGetProjectMembers(projectId);
+      setMembers(data || []);
+    } catch (err) {
+      console.error('Failed to fetch members', err);
+    }
+  };
+
+  useEffect(() => {
+    if (showMembers) fetchMembers();
+  }, [showMembers]);
 
   const fetchProjectDetails = async () => {
     if (!projectId) return;
@@ -24,6 +46,7 @@ export const ProjectDetail: React.FC = () => {
     try {
       const data = await apiGetProjectById(projectId);
       setProject(data);
+      // backend will already filter documents for non-admins, but keep defensive fallback
       setDocuments(data.documents || []);
       setLoading(false);
     } catch (error) {
@@ -36,6 +59,31 @@ export const ProjectDetail: React.FC = () => {
   const handleUploadComplete = () => {
     setShowUpload(false);
     fetchProjectDetails(); // Refresh the documents list
+  };
+
+  const handleAddMember = async () => {
+    if (!projectId || !addingEmail) return;
+    try {
+      await apiAddProjectMember(projectId, addingEmail, 'viewer');
+      setAddingEmail('');
+      fetchMembers();
+      toast.success('Member added');
+    } catch (err) {
+      console.error('add member failed', err);
+      toast.error('Failed to add member');
+    }
+  };
+
+  const handleRemoveMember = async (userId: string) => {
+    if (!projectId) return;
+    try {
+      await apiRemoveProjectMember(projectId, userId);
+      fetchMembers();
+      toast.success('Member removed');
+    } catch (err) {
+      console.error('remove member failed', err);
+      toast.error('Failed to remove member');
+    }
   };
 
   if (loading) {
@@ -85,6 +133,15 @@ export const ProjectDetail: React.FC = () => {
           <Upload className="h-5 w-5 mr-2" />
           Upload Files
         </button>
+        {/* Admin controls: manage members */}
+        {(user?.role === 'admin' || user?.role === 'project_manager') && (
+          <button
+            onClick={() => setShowMembers(true)}
+            className="ml-4 inline-flex items-center px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition-colors"
+          >
+            Manage Members
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -133,23 +190,48 @@ export const ProjectDetail: React.FC = () => {
                 <div>
                   <h3 className="font-medium text-gray-900">{doc.filename}</h3>
                   <p className="text-sm text-gray-500">{doc.description}</p>
+                  <div className="mt-2">
+                    <span className={`inline-block px-2 py-1 text-xs rounded ${doc.status === 'verified' ? 'bg-green-100 text-green-800' : doc.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
+                      {doc.status ? doc.status.toUpperCase() : 'UNKNOWN'}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex items-center space-x-4">
-                  <span className="text-sm text-gray-500">{new Date(doc.created_at).toLocaleDateString()}</span>
-                  <button 
-                    className="text-blue-600 hover:text-blue-700 transition-colors px-3 py-1 rounded-md hover:bg-blue-50"
-                    onClick={() => {
-                      // The url starts with /uploads/ and points to the actual file
-                      if (doc.url) {
-                        // Construct the full URL using the API base URL
-                        const fullUrl = `${import.meta.env.VITE_API_URL}${doc.url}`;
-                        // Open in new tab which will trigger download
-                        window.open(fullUrl, '_blank');
-                      }
-                    }}
-                  >
-                    Download
-                  </button>
+                  <span className="text-sm text-gray-500">{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : ''}</span>
+                  <div className="flex items-center space-x-2">
+                    {(user?.role === 'admin' || user?.role === 'project_manager') && doc.status !== 'verified' && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await apiVerifyDocument(String(doc.id));
+                            toast.success('Document verified');
+                            fetchProjectDetails();
+                          } catch (err) {
+                            console.error('Failed to verify document', err);
+                            toast.error('Verification failed');
+                          }
+                        }}
+                        className="px-3 py-1 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm"
+                      >
+                        Verify
+                      </button>
+                    )}
+
+                    {(() => {
+                      const fileUrl = resolveFileUrl(doc.url);
+                      const disabled = !fileUrl;
+                      return (
+                        <button
+                          className={`text-blue-600 ${disabled ? 'text-gray-400 cursor-not-allowed' : 'hover:text-blue-700'} transition-colors px-3 py-1 rounded-md ${!disabled ? 'hover:bg-blue-50' : ''}`}
+                          onClick={() => { if (fileUrl) window.open(fileUrl, '_blank'); }}
+                          title={disabled ? 'Local file not served' : 'Download'}
+                          disabled={disabled}
+                        >
+                          Download
+                        </button>
+                      );
+                    })()}
+                  </div>
                 </div>
               </div>
             </div>
@@ -178,6 +260,41 @@ export const ProjectDetail: React.FC = () => {
           onUploadComplete={handleUploadComplete}
           onClose={() => setShowUpload(false)}
         />
+      )}
+      {showMembers && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Manage Members</h2>
+              <button onClick={() => setShowMembers(false)} className="text-gray-500">Close</button>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Add member by email</label>
+              <div className="flex space-x-2">
+                <input placeholder="user@example.org" value={addingEmail} onChange={(e) => setAddingEmail(e.target.value)} className="flex-1 px-3 py-2 border rounded" />
+                <button onClick={handleAddMember} className="px-3 py-2 bg-blue-600 text-white rounded">Add</button>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-sm font-medium mb-2">Members</h3>
+              <div className="divide-y">
+                {members.map(m => (
+                  <div key={m.user_id} className="flex items-center justify-between py-2">
+                    <div>
+                      <div className="font-medium">{m.full_name || m.email}</div>
+                      <div className="text-xs text-gray-500">{m.email} · {m.role}</div>
+                    </div>
+                    <div>
+                      <button onClick={() => handleRemoveMember(m.user_id)} className="px-3 py-1 bg-red-600 text-white rounded">Remove</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
